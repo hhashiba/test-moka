@@ -1,3 +1,5 @@
+use std::sync::mpsc;
+
 use anyhow::{Error, Result};
 use async_trait::async_trait;
 use chrono::Duration;
@@ -9,70 +11,33 @@ use salvo::{
         Listener,
         tcp::{TcpAcceptor, TcpListener},
     },
+    http::header::{self as header, HeaderValue},
     prelude::*,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
-use tracing::info;
-
-fn to_value(i: u16) -> String {
-    format!("VAL-{}", i)
-}
+use tracing::{error, info};
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     tracing_subscriber::fmt().init();
-    // let cache: Cache<u16, String> = Cache::builder()
-    //     .time_to_live(Duration::minutes(30).to_std().unwrap())
-    //     .build();
-    // let keys: Vec<u16> = (1..=100).into_iter().collect();
+    let cache: Cache<u16, String> = Cache::builder()
+        .initial_capacity(100)
+        .time_to_live(Duration::minutes(30).to_std().unwrap())
+        .build();
 
-    // tokio_stream::iter(keys.to_owned())
-    //     .map(|key| {
-    //         let cache_clone = cache.clone();
-    //         let value = to_value(key);
-    //         tokio::spawn(async move {
-    //             println!(
-    //                 "thread_id :{:?} insert to cache. key :{} value: {}",
-    //                 std::thread::current().id(),
-    //                 key,
-    //                 value
-    //             );
-    //             cache_clone.insert(key, value).await;
-    //         })
-    //     })
-    //     .buffer_unordered(4)
-    //     .collect::<Vec<_>>()
-    //     .await;
+    run(cache).await;
 
-    // tokio_stream::iter(keys)
-    //     .map(|key| {
-    //         let cache_clone = cache.clone();
-    //         let expect = to_value(key);
-    //         tokio::spawn(async move {
-    //             let value = cache_clone.get(&key).await.unwrap_or_default();
-
-    //             if value == expect {
-    //                 println!(
-    //                     "thread_id :{:?} cached value is same to expected value. value :{} expect: {}",
-    //                     std::thread::current().id(),
-    //                     value, expect
-    //                 );
-    //             }
-    //         })
-    //     })
-    //     .buffer_unordered(4)
-    //     .collect::<Vec<_>>()
-    //     .await;
-
-    run().await;
+    info!("completed main func");
 
     Ok(())
 }
 
-async fn run() {
+async fn run(cache: Cache<u16, String>) {
     info!("creating server");
-    let health = Router::with_path("healthz").get(healthz).post(post_healthz);
+
+    let cache_data = CacheData { cache };
+    let health = Router::with_path("healthz").get(healthz).post(cache_data);
     let router = Router::new().push(health);
 
     let service = Service::new(router).catcher(Catcher::default().hoop(handle_error));
@@ -98,15 +63,6 @@ async fn run() {
     }
 }
 
-#[handler]
-async fn healthz(res: &mut Response) {
-    info!("healthz was called");
-    let response = HealthzResponseBody {
-        content: "foo".to_string(),
-    };
-    res.render(Json(response));
-}
-
 #[derive(Debug, Clone, Serialize)]
 struct HealthzResponseBody {
     content: String,
@@ -118,35 +74,57 @@ struct HealthzRequestBody {
     content: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct HealthzError;
 
-#[async_trait]
-impl Writer for HealthzError {
-    async fn write(mut self, _req: &mut Request, _depot: &mut Depot, res: &mut Response) {
-        let status_code = StatusCode::INTERNAL_SERVER_ERROR;
-        let content = "error occurred".to_string();
-        let response = HealthzResponseBody { content };
-        res.status_code(status_code);
-        res.render(Json(response));
-    }
+#[handler]
+async fn healthz(res: &mut Response) {
+    info!("healthz was called");
+    let response = HealthzResponseBody {
+        content: "foo".to_string(),
+    };
+    res.render(Json(response));
 }
 
-#[handler]
-async fn post_healthz(
-    body: HealthzRequestBody,
-    res: &mut Response,
-    ctrl: &mut FlowCtrl,
-) -> Result<(), HealthzError> {
-    info!("post_healthz was called");
-    ctrl.skip_rest();
+#[derive(Debug, Clone)]
+struct CacheData {
+    cache: Cache<u16, String>,
+}
 
-    let content = body.content;
-    let response = HealthzResponseBody { content };
+#[async_trait]
+impl Handler for CacheData {
+    async fn handle(
+        &self,
+        req: &mut Request,
+        _depot: &mut Depot,
+        res: &mut Response,
+        ctrl: &mut FlowCtrl,
+    ) {
+        info!("cache_data handle was called");
+        ctrl.skip_rest();
 
-    res.render(Json(response));
+        let maybe_body = req.parse_json::<HealthzRequestBody>().await;
 
-    Ok(())
+        if maybe_body.is_err() {
+            let err_response = HealthzResponseBody {
+                content: "failed to parse request body.".to_string(),
+            };
+            res.render(Json(err_response));
+        }
+
+        let value = self.cache.get(&0).await.unwrap_or_default();
+        info!("get cache. value: {}", &value);
+
+        let body = maybe_body.unwrap();
+        let content = format!("{} {}", &body.content, &value);
+
+        let _ = self.cache.insert(0, body.content.to_owned()).await;
+        info!("insert cache. key: {}, value: {}", 0, &body.content);
+
+        let response = HealthzResponseBody { content };
+
+        res.render(Json(response));
+    }
 }
 
 #[handler]
@@ -157,7 +135,7 @@ async fn handle_error(
     res: &mut Response,
     ctrl: &mut FlowCtrl,
 ) {
-    info!("error was occurred");
+    error!("error was occurred");
     let status = res.status_code.unwrap_or_default();
     let content = match status {
         StatusCode::BAD_REQUEST => "invalid parameter is set.".to_string(),
@@ -174,5 +152,16 @@ async fn handle_error(
         res.status_code(status);
         res.render(Json(response));
         ctrl.skip_rest();
+    }
+}
+
+#[async_trait]
+impl Writer for HealthzError {
+    async fn write(mut self, _req: &mut Request, _depot: &mut Depot, res: &mut Response) {
+        let status_code = StatusCode::INTERNAL_SERVER_ERROR;
+        let content = "error occurred".to_string();
+        let response = HealthzResponseBody { content };
+        res.status_code(status_code);
+        res.render(Json(response));
     }
 }
