@@ -12,10 +12,12 @@ tracing-subscriber = { version = "0.3", features = ["json"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 chrono = "0.4"
-rust_decimal = {version = "1.36", features = ["db-diesel2-postgres"]}
+url = "2.4"
 derive_more = { version = "0.99", default-features = false, features = ["from", "deref", "display", "from_str"] }
 strum = { version = "0.26", features = ["derive"] }
 trait-variant = "0.1"
 thiserror = "2.0"
 futures = "0.3"
 moka = { version = "0.12.10", features = ["future"] }
+salvo = "0.58"
+async-trait = "0.1"
