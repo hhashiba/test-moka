@@ -26,7 +26,7 @@ update_cargo: ## build application
 run: ## run binary: e.g. make run ARG=--help && make run ARG=-V
 	@make build
 	@cargo build -j $(CPU_CORES) --locked
-	@./target/debug/dsf_ms_batch ${ARG}
+	@./target/debug/test-moka ${ARG}
 
 .PHONY:	test
 test: ## run: cargo test

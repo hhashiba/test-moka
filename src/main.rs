@@ -17,8 +17,15 @@ async fn main() -> Result<(), Error> {
     tokio_stream::iter(keys.to_owned())
         .map(|key| {
             let cache_clone = cache.clone();
+            let value = to_value(key);
             tokio::spawn(async move {
-                cache_clone.insert(key, to_value(key)).await;
+                println!(
+                    "thread_id :{:?} insert to cache. key :{} value: {}",
+                    std::thread::current().id(),
+                    key,
+                    value
+                );
+                cache_clone.insert(key, value).await;
             })
         })
         .buffer_unordered(4)
